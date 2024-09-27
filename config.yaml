@@ -1,0 +1,146 @@
+receivers:
+  metricsreceiver: # this line represents the ID of your receiver
+    scrape_config:
+      - interval: 40s
+        device_type: "storage"
+        timeout: 88s
+        metric_keys:
+          - "portIopsAvg"
+          - "portIopsMax"
+          - "portIopsMin"
+          - "portKbpsAvg"
+          - "portKbpsMax"
+          - "portKbpsMin"
+          - "logical_unit_ldevIO_randomIO_read"
+          - "logical_unit_ldevIO_totalIO_write"
+          - "logical_unit_random_iops"
+          - "logical_unit_write_latency"
+          - "logical_unit_total_write_hit"
+          - "logical_unit_ldevBlockIO_totalIO_read"
+          - "logical_unit_ldevIO_sequentialIO_writeHit"
+          - "logical_unit_logicalUnitIO_sequentialIO_read"
+          - "logical_unit_write_cache_hit_ratio"
+          - "logical_unit_logicalUnitBlockIO_randomIO_write"
+          - "logical_unit_logicalUnitBlockIO_sequentialIO_read"
+          - "logical_unit_ldevLatency_write"
+          - "logical_unit_total_cache_hits"
+          - "logical_unit_ldevBlockIO_sequentialIO_write"
+          - "logical_unit_logicalUnitBlockIO_randomIO_read"
+          - "logical_unit_ldevLatency_writeMax"
+          - "logical_unit_logicalUnitIO_randomIO_readHit"
+          - "logical_unit_logicalUnitIO_randomIO_writeHit"
+          - "logical_unit_logicalUnitIO_sequentialIO_readHit"
+          - "logical_unit_logicalUnitIO_totalIO_read"
+          - "logical_unit_iops"
+          - "logical_unit_ldevBlockIO_randomIO_read"
+          - "logical_unit_max_write_latency"
+          - "logical_unit_read_latency"
+          - "logical_unit_logicalUnitIO_randomIO_read"
+          - "logical_unit_read_cache_hit_ratio"
+          - "logical_unit_ldevIO_totalIO_readHit"
+          - "logical_unit_ldevBlockIO_sequentialIO_writeHit"
+          - "logical_unit_ldevBlockIO_sequentialIO_read"
+          - "logical_unit_ldevIO_totalIO_read"
+          - "logical_unit_ldevBlockIO_sequentialIO_readHit"
+          - "logical_unit_ldevIO_totalIO_writeHit"
+          - "logical_unit_logicalUnitBlockIO_randomIO_readHit"
+          - "logical_unit_logicalUnitBlockIO_totalIO_write"
+          - "logical_unit_logicalUnitIO_sequentialIO_write"
+          - "logical_unit_logicalUnitBlockIO_sequentialIO_writeHit"
+          - "logical_unit_logicalUnitBlockIO_totalIO_writeHit"
+          - "logical_unit_ldevBlockIO_randomIO_write"
+          - "logical_unit_ldevBlockIO_randomIO_writeHit"
+          - "logical_unit_ldevIO_randomIO_write"
+          - "logical_unit_ldevIO_randomIO_writeHit"
+          - "logical_unit_ldevIO_sequentialIO_read"
+          - "logical_unit_ldevIO_sequentialIO_write"
+          - "logical_unit_ldevLatency_read"
+          - "logical_unit_ldevLatency_readMax"
+          - "logical_unit_sequential_iops"
+          - "logical_unit_total_read_io"
+          - "logical_unit_total_write_io"
+          - "logical_unit_ldevBlockIO_randomIO_readHit"
+          - "logical_unit_ldevBlockIO_totalIO_readHit"
+          - "logical_unit_ldevBlockIO_totalIO_write"
+          - "logical_unit_ldevBlockIO_totalIO_writeHit"
+          - "logical_unit_ldevIO_randomIO_readHit"
+          - "logical_unit_ldevIO_sequentialIO_readHit"
+          - "logical_unit_logicalUnitBlockIO_randomIO_writeHit"
+          - "logical_unit_logicalUnitBlockIO_sequentialIO_readHit"
+          - "logical_unit_logicalUnitBlockIO_sequentialIO_write"
+          - "logical_unit_logicalUnitBlockIO_totalIO_read"
+          - "logical_unit_logicalUnitBlockIO_totalIO_readHit"
+          - "logical_unit_logicalUnitIO_randomIO_write"
+          - "logical_unit_logicalUnitIO_sequentialIO_writeHit"
+          - "logical_unit_logicalUnitIO_totalIO_readHit"
+          - "logical_unit_logicalUnitIO_totalIO_write"
+          - "logical_unit_logicalUnitIO_totalIO_writeHit"
+          - "logical_unit_max_read_latency"
+          - "logical_unit_total_read_hit"
+        timestamp_keys:
+          - "time"
+
+
+
+      - interval: 40s
+        device_type: "compute"
+        timeout: 30s
+        metric_keys:
+        - "avgPower1week"
+        - "avgPower20min"
+        - "avgPower24hour"
+        - "avgPower5min"
+        - "maxPower20min"
+        - "maxPower24hour"
+        - "maxPower5min"
+        - "maxPower1week"
+        - "minPower20min"
+        - "minPower24hour"
+        - "minPower5min"
+        - "minPower1week"
+        - "powerInputVoltage"
+        - "presentPowerReading"
+        - "sensor_temperature"
+        - "sensor_fan_value"
+        timestamp_keys:
+          - "time"
+      # #     - "timeStamp"
+    endpoint: "https://genai-qdrant.genai.sc.eng.hitachivantara.com/metrics"
+    auth_endpoint: "https://172.25.92.81/porcelain/v2/auth/login"
+    compute_endpoint: "https://172.25.92.81/porcelain/v2/systems"
+    metrics_base_url: "https://172.25.92.81"
+processors:
+  batch:
+    send_batch_size: 2000
+    timeout: 10s
+exporters:
+  prometheusremotewrite:
+    endpoint: "http://127.0.0.1:4000/v1/prometheus/write?db=public"
+    timeout: 120s
+    headers:
+      Authorization: "Bearer your-auth-token"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 90s
+      max_elapsed_time: 300s
+    # remote_write_queue:
+    #   enabled: true
+    #   queue_size: 20000  # Keep this large enough to handle short bursts of traffic
+    #   num_consumers: 5
+    # wal:  # Enable Write-Ahead Log (WAL) to persist metrics to disk
+    #   directory: ./prom_rw  # Directory to store WAL files
+    #   buffer_size: 1000      # Optional: Number of elements to buffer before truncating
+    #   truncate_frequency: 1m # Optional: How often to truncate the WAL (default: 1m)
+
+
+service:
+  pipelines:
+    metrics:
+      receivers: [metricsreceiver]
+      processors: [batch]
+      exporters: [prometheusremotewrite]
+
+  telemetry:
+    logs:
+      level: "debug"
