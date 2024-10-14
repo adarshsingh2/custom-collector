@@ -40,17 +40,12 @@ type TokenResponse struct {
 	} `json:"data"`
 }
 
-type StorageDevice struct {
-	SerialNumber string `json:"serialNumber"`
-	ResourceID   string `json:"resourceId"`
-	Model        string `json:"model"`
-}
-
 type ComputeDevice struct {
 	ResourceID  string `json:"resourceId"`
 	BiosVersion string `json:"biosVersion"`
 	Model       string `json:"model"`
 	Serial      string `json:"serial"`
+	BmcAddress  string `json:"bmcAddress"`
 }
 
 type System struct {
@@ -61,6 +56,7 @@ type System struct {
 	SerialNumber   string          `json:"serialNumber"`
 	Model          string          `json:"model"`
 	Zone           string          `json:"zone"`
+	GatewayAddress string          `json:"gatewayAddress"`
 }
 
 type Systems struct {
@@ -69,17 +65,30 @@ type Systems struct {
 	Data    []System `json:"data"`
 }
 
-type EndpointFormat struct {
-	URLFormat string
+type StorageDevice struct {
+	SerialNumber   string `json:"serialNumber"`
+	ResourceID     string `json:"resourceId"`
+	Model          string `json:"model"`
+	GatewayAddress string `json:"gatewayAddress"`
+	ManagementIP   string `json:"address"`
 }
 
-var endpointFormats = map[string]EndpointFormat{
-	"storage": {
-		URLFormat: "%s/monitoring/storage/%s/ports/metrics",
-	},
-	"compute": {
-		URLFormat: "%s/monitoring/compute/%s/power",
-	},
+// Add common headers to a request.
+func (metricsRcvr *metricsReceiver) addCommonHeaders(req *http.Request, device StorageDevice) {
+	req.Header.Set("X-Management-IPs", device.ManagementIP)
+	req.Header.Set("X-Subsystem-User", "ms_vmware")
+	req.Header.Set("X-Subsystem-Password", "Hitachi1")
+	req.Header.Set("X-Storage-Id", device.SerialNumber)
+}
+
+// Aggregate multiple errors into a single error message.
+func (metricsRcvr *metricsReceiver) aggregateErrors(aggregatedErrors []error) error {
+	var errorMsg strings.Builder
+	errorMsg.WriteString("Errors occurred during metrics fetch: \n")
+	for _, err := range aggregatedErrors {
+		errorMsg.WriteString(fmt.Sprintf("- %s\n", err.Error()))
+	}
+	return fmt.Errorf(errorMsg.String())
 }
 
 func (metricsRcvr *metricsReceiver) Start(ctx context.Context, host component.Host) error {
@@ -101,13 +110,13 @@ func (metricsRcvr *metricsReceiver) Start(ctx context.Context, host component.Ho
 			for {
 				select {
 				case <-ticker.C:
-					metricsRcvr.logger.Info("Fetching metrics from endpoints", zap.String("device", config.Device))
+					metricsRcvr.logger.Info("Fetching metrics from endpoints", zap.String("device", config.DeviceType))
 					err := metricsRcvr.fetchAndConsumeMetrics(ctx, config)
 					if err != nil {
 						metricsRcvr.logger.Error("Failed to consume metrics", zap.Error(err))
 					}
 				case <-ctx.Done():
-					metricsRcvr.logger.Info("Context canceled, stopping scraping for device", zap.String("device", config.Device))
+					metricsRcvr.logger.Info("Context canceled, stopping scraping for device", zap.String("device", config.DeviceType))
 					return
 				}
 			}
@@ -121,61 +130,6 @@ func (metricsRcvr *metricsReceiver) Shutdown(ctx context.Context) error {
 	if metricsRcvr.cancel != nil {
 		metricsRcvr.cancel()
 	}
-	return nil
-}
-
-func (metricsRcvr *metricsReceiver) fetchAndConsumeMetrics(ctx context.Context, config ScrapeConfig) error {
-	// Step 1: Get token
-	token, err := metricsRcvr.getToken()
-	if err != nil {
-		return fmt.Errorf("failed to get token: %w", err)
-	}
-
-	// Step 2: Get compute instances
-	systems, err := metricsRcvr.getAllSystems(token)
-	if err != nil {
-		return fmt.Errorf("failed to get compute instances: %w", err)
-	}
-
-	// Step 3: Fetch metrics for each system
-	var wg sync.WaitGroup
-
-	for _, system := range systems.Data {
-		switch config.Device {
-		case "compute":
-			for _, device := range system.ComputeDevices {
-				wg.Add(1)
-				system := system
-				go func(device ComputeDevice) {
-					defer wg.Done()
-					err := metricsRcvr.fetchAndProcessMetrics(ctx, token, "compute", device.ResourceID, system, device, config)
-					if err != nil {
-						metricsRcvr.logger.Error("Failed to fetch metrics for compute instance", zap.String("instance_id", device.ResourceID), zap.Error(err))
-					}
-				}(device)
-			}
-
-		case "storage":
-			for _, device := range system.StorageDevices {
-				wg.Add(1)
-				system := system
-				go func(device StorageDevice) {
-					defer wg.Done()
-					err := metricsRcvr.fetchAndProcessMetrics(ctx, token, "storage", device.ResourceID, system, device, config)
-					if err != nil {
-						metricsRcvr.logger.Error("Failed to fetch metrics for storage instance", zap.String("instance_id", device.ResourceID), zap.Error(err))
-					}
-				}(device)
-			}
-
-		default:
-			return fmt.Errorf("unknown device type: %s", config.Device)
-		}
-	}
-
-	// Wait for all goroutines to complete
-	wg.Wait()
-
 	return nil
 }
 
@@ -247,7 +201,7 @@ func (metricsRcvr *metricsReceiver) getToken() (string, error) {
 	return metricsRcvr.token, nil
 }
 
-func (metricsRcvr *metricsReceiver) getAllSystems(token string) (*Systems, error) {
+func (metricsRcvr *metricsReceiver) fetchSystemData(token string) (*Systems, error) {
 	req, err := http.NewRequest("GET", metricsRcvr.config.ComputeEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -274,88 +228,84 @@ func (metricsRcvr *metricsReceiver) getAllSystems(token string) (*Systems, error
 	return &systems, nil
 }
 
-func (metricsRcvr *metricsReceiver) fetchAndProcessMetrics(ctx context.Context, token string, endpoint string, resourceID string, system System, device interface{}, config ScrapeConfig) error {
+func (metricsRcvr *metricsReceiver) fetchAndConsumeMetrics(ctx context.Context, config ScrapeConfig) error {
+	metricsRcvr.logger.Info("Starting to fetch and consume metrics", zap.String("deviceType", config.DeviceType))
 
-	// Skip specific resourceID for "storage" endpoint
-	if endpoint == "storage" && resourceID == "storage-2da44b3187ef43f30627344ee47d0741" {
-		metricsRcvr.logger.Info("Skipping metrics fetch for resourceID", zap.String("resourceID", resourceID))
-		return nil
-	}
-
-	format, exists := endpointFormats[endpoint]
-	if !exists {
-		return fmt.Errorf("unknown endpoint format: %s", endpoint)
-	}
-
-	metricsURL := fmt.Sprintf(format.URLFormat, metricsRcvr.config.MetricsBaseURL, resourceID)
-
-	// Parse the timeout duration from ScrapeConfig
-	timeout, err := time.ParseDuration(config.Timeout)
+	// Step 1: Get token
+	tokenStartTime := time.Now()
+	token, err := metricsRcvr.getToken()
 	if err != nil {
-		return fmt.Errorf("invalid timeout value in ScrapeConfig: %w", err)
+		metricsRcvr.logger.Error("Failed to get token", zap.Error(err), zap.Duration("timeTaken", time.Since(tokenStartTime)))
+		return fmt.Errorf("failed to get token: %w", err)
 	}
+	metricsRcvr.logger.Info("Successfully retrieved token", zap.Duration("timeTaken", time.Since(tokenStartTime)))
 
-	// Create a new context with a timeout for the HTTP request
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(requestCtx, "GET", metricsURL, nil)
+	// Step 2: Get compute instances
+	systemStartTime := time.Now()
+	systems, err := metricsRcvr.fetchSystemData(token)
 	if err != nil {
-		return fmt.Errorf("failed to create metrics request: %w", err)
+		metricsRcvr.logger.Error("Failed to get compute instances", zap.Error(err), zap.Duration("timeTaken", time.Since(systemStartTime)))
+		return fmt.Errorf("failed to get compute instances: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	metricsRcvr.logger.Info("Successfully retrieved compute instances", zap.Int("systemsCount", len(systems.Data)), zap.Duration("timeTaken", time.Since(systemStartTime)))
 
-	// Log the start time
-	startTime := time.Now()
-	metricsRcvr.logger.Info("Fetching metrics", zap.String("url", metricsURL), zap.String("resourceID", resourceID))
-
-	// Make the HTTP request using the custom HTTP client with a timeout
-	resp, err := metricsRcvr.getHttpClient().Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to fetch metrics: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Log the end time and calculate the duration
-	duration := time.Since(startTime)
-	metricsRcvr.logger.Info("Metrics response received",
-		zap.String("url", metricsURL),
-		zap.String("resourceID", resourceID),
-		zap.Int("status_code", resp.StatusCode),
-		zap.Duration("duration", duration),
-	)
-
-	// Parse the JSON response into a map
-	var response map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	// Handle different types of "data" field
-	switch data := response["data"].(type) {
-	case map[string]interface{}:
-		// If "data" is a map, process it directly
-		return metricsRcvr.parseAndProcessMetrics(ctx, data, resourceID, system, device, config)
-
-	case []interface{}:
-		// If "data" is an array, iterate and process each element
-		for _, item := range data {
-			itemMap, ok := item.(map[string]interface{})
-			if !ok {
-				return fmt.Errorf("unexpected item structure in data array")
+	// Step 3: Fetch metrics for each system
+	var wg sync.WaitGroup
+	for _, system := range systems.Data {
+		metricsRcvr.logger.Info("Processing system", zap.String("systemId", system.Name))
+		switch config.DeviceType {
+		case "compute":
+			metricsRcvr.logger.Info("Fetching metrics for compute devices", zap.Int("deviceCount", len(system.ComputeDevices)))
+			parser := ComputeMetricParser{metricsRcvr: metricsRcvr}
+			for _, device := range system.ComputeDevices {
+				wg.Add(1)
+				go func(device ComputeDevice) {
+					defer wg.Done()
+					deviceStartTime := time.Now()
+					metricsRcvr.logger.Debug("Fetching compute metrics", zap.String("instance_id", device.ResourceID))
+					err := parser.fetchComputeMetrics(ctx, token, device.ResourceID, system, device, config)
+					if err != nil {
+						metricsRcvr.logger.Error("Failed to fetch metrics for compute instance", zap.String("instance_id", device.ResourceID), zap.Error(err), zap.Duration("timeTaken", time.Since(deviceStartTime)))
+					} else {
+						metricsRcvr.logger.Info("Successfully fetched compute metrics", zap.String("instance_id", device.ResourceID), zap.Duration("timeTaken", time.Since(deviceStartTime)))
+					}
+				}(device)
 			}
-			if err := metricsRcvr.parseAndProcessMetrics(ctx, itemMap, resourceID, system, device, config); err != nil {
-				return err
+
+		case "storage":
+			metricsRcvr.logger.Info("Fetching metrics for storage devices", zap.Int("deviceCount", len(system.StorageDevices)))
+			for _, device := range system.StorageDevices {
+				wg.Add(1)
+				go func(device StorageDevice) {
+					defer wg.Done()
+					deviceStartTime := time.Now()
+					metricsRcvr.logger.Debug("Fetching storage metrics", zap.String("instance_id", device.ResourceID))
+					err := metricsRcvr.fetchStorageMetrics(ctx, token, device.ResourceID, system, device, config)
+					if err != nil {
+						metricsRcvr.logger.Error("Failed to fetch metrics for storage instance", zap.String("instance_id", device.ResourceID), zap.Error(err), zap.Duration("timeTaken", time.Since(deviceStartTime)))
+					} else {
+						metricsRcvr.logger.Info("Successfully fetched storage metrics", zap.String("instance_id", device.ResourceID), zap.Duration("timeTaken", time.Since(deviceStartTime)))
+					}
+				}(device)
 			}
+
+		default:
+			metricsRcvr.logger.Error("Unknown device type encountered", zap.String("deviceType", config.DeviceType))
+			return fmt.Errorf("unknown device type: %s", config.DeviceType)
 		}
-		return nil
-
-	default:
-		return fmt.Errorf("unexpected response structure")
 	}
+
+	// Wait for all goroutines to complete
+	metricsRcvr.logger.Debug("Waiting for all metrics fetching routines to complete")
+	wgStartTime := time.Now()
+	wg.Wait()
+	metricsRcvr.logger.Info("All metrics fetching routines completed", zap.Duration("timeTaken", time.Since(wgStartTime)))
+
+	metricsRcvr.logger.Info("Completed fetching and consuming metrics", zap.String("deviceType", config.DeviceType), zap.Duration("totalTimeTaken", time.Since(tokenStartTime)))
+	return nil
 }
 
-func (metricsRcvr *metricsReceiver) parseAndProcessMetrics(ctx context.Context, data map[string]interface{}, instanceID string, system System, device interface{}, config ScrapeConfig) error {
+func (metricsRcvr *metricsReceiver) processParsedMetrics(ctx context.Context, data map[string]interface{}, instanceID string, system System, device interface{}, config ScrapeConfig) error {
 	// Create an empty pmetric.Metrics object
 	metrics := pmetric.NewMetrics()
 	rm := metrics.ResourceMetrics().AppendEmpty()
@@ -436,12 +386,3 @@ func (metricsRcvr *metricsReceiver) parseAndProcessMetrics(ctx context.Context, 
 	return metricsRcvr.nextConsumer.ConsumeMetrics(ctx, metrics)
 }
 
-// Helper function to check if a string is in a slice
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}

@@ -8,7 +8,7 @@ import (
 // ScrapeConfig represents a single scrape configuration within the receiver's config.yaml
 type ScrapeConfig struct {
 	Interval      string   `mapstructure:"interval"`
-	Device        string   `mapstructure:"device"`
+	DeviceType    string   `mapstructure:"device_type"`
 	Timeout       string   `mapstructure:"timeout"`
 	MetricKeys    []string `mapstructure:"metric_keys"`
 	TimestampKeys []string `mapstructure:"timestamp_keys"`
@@ -46,7 +46,7 @@ func (sc *ScrapeConfig) Validate() error {
 		return fmt.Errorf("the interval in scrape_config has to be set to at least 10 secs (10s)")
 	}
 
-	if sc.Device == "" {
+	if sc.DeviceType == "" {
 		return fmt.Errorf("device in scrape_config cannot be empty")
 	}
 
